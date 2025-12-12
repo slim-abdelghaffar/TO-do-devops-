@@ -1,5 +1,3 @@
----
-# Frontend Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,22 +15,30 @@ spec:
     spec:
       containers:
       - name: frontend
-        image: myacrregistry.azurecr.io/todo-frontend:latest  # Jenkins will update this
+        image: acrtodo3hvvezx7hmiso.azurecr.io/frontend:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 80
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
 
 ---
-# Frontend Service (LoadBalancer)
+# Frontend Service (ClusterIP for Ingress)
 apiVersion: v1
 kind: Service
 metadata:
   name: frontend-service
   namespace: todo-app
 spec:
-  type: LoadBalancer
+  type: ClusterIP
   selector:
     app: frontend
   ports:
   - port: 80
     targetPort: 80
+    protocol: TCP
