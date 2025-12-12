@@ -6,7 +6,7 @@ pipeline {
     // ════════════════════════════════════════════════════════════════
     environment {
         // Azure Container Registry
-        ACR_NAME = 'acrcicdlctccfyxhw4qg'
+        ACR_NAME = 'acrtodo3hvvezx7hmiso'
         ACR_CREDENTIALS_ID = 'ACR'
         
         // Kubernetes
