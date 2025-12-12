@@ -1,11 +1,12 @@
 // ========================================
 // Configuration
 // ========================================
-const API_URL = window.location.hostname === 'localhost' 
-    ? 'http://localhost:3000/api' 
-    : 'http://backend-service:3000/api';
+const API_URL = window.location.hostname === 'localhost'
+    ? 'http://localhost:3000/api'
+    : '/api';
 
 const HEALTH_CHECK_URL = API_URL.replace('/api', '/health');
+
 
 // ========================================
 // DOM Elements
