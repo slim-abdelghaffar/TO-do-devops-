@@ -1,54 +1,114 @@
 ---
-# Backend Deployment
+# PostgreSQL Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  namespace: todo-app
+type: Opaque
+stringData:
+  postgres-user: todouser
+  postgres-password: TodoPassword123!
+---
+# PostgreSQL PersistentVolumeClaim
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: todo-app
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: default
+---
+# PostgreSQL Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: backend-deployment
+  name: postgres-deployment
   namespace: todo-app
+  labels:
+    app: postgres
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
-      app: backend
+      app: postgres
   template:
     metadata:
       labels:
-        app: backend
+        app: postgres
     spec:
       containers:
-      - name: backend
-        image: myacrregistry.azurecr.io/todo-backend:latest  # Jenkins will update this
-        imagePullPolicy: Always
+      - name: postgres
+        image: postgres:15-alpine
         env:
-        - name: DB_HOST
-          value: postgres-service
-        - name: DB_USER
+        - name: POSTGRES_USER
           valueFrom:
             secretKeyRef:
               name: postgres-secret
               key: postgres-user
-        - name: DB_PASSWORD
+        - name: POSTGRES_PASSWORD
           valueFrom:
             secretKeyRef:
               name: postgres-secret
               key: postgres-password
-        - name: DB_NAME
+        - name: POSTGRES_DB
           value: tododb
-        - name: DB_PORT
-          value: "5432"
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
         ports:
-        - containerPort: 3000
-
+        - name: postgres
+          containerPort: 5432
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        # ✅ Health checks
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - todouser
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - todouser
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        # ✅ Resource limits
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: postgres-pvc
 ---
-# Backend Service
+# PostgreSQL Service
 apiVersion: v1
 kind: Service
 metadata:
-  name: backend-service
+  name: postgres-service
   namespace: todo-app
+  labels:
+    app: postgres
 spec:
+  type: ClusterIP  # ✅ Interne uniquement
   selector:
-    app: backend
+    app: postgres
   ports:
-  - port: 3000
-    targetPort: 3000
+  - name: postgres
+    port: 5432
+    targetPort: 5432
