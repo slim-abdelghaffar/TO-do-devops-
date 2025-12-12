@@ -1,35 +1,65 @@
 pipeline {
     agent any
     
+    // ════════════════════════════════════════════════════════════════
+    // 📝 CONFIGURATION - Modifiez uniquement cette section
+    // ════════════════════════════════════════════════════════════════
     environment {
+        // Azure Container Registry
         ACR_NAME = 'acrcicdlctccfyxhw4qg'
-        ACR_LOGIN_SERVER = "${ACR_NAME}.azurecr.io"
-        BACKEND_IMAGE = 'backend'
-        BUILD_NUMBER = "${env.BUILD_NUMBER}"
+        ACR_CREDENTIALS_ID = 'ACR'
+        
+        // Kubernetes
         NAMESPACE = 'todo-app'
+        KUBECONFIG_CREDENTIALS_ID = 'kubeconfig'
+        
+        // Application
+        APP_NAME = 'backend'
+        DOCKER_IMAGE = 'backend'
+        
+        // SonarQube
+        SONAR_PROJECT_KEY = 'todo-backend'
+        SONAR_PROJECT_NAME = 'TODO Backend'
+        
+        // Paths
+        APP_DIR = 'backend'
+        K8S_DIR = 'k8s'
+        
+        // Auto-calculated (ne pas modifier)
+        ACR_LOGIN_SERVER = "${ACR_NAME}.azurecr.io"
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
     }
     
+    // ════════════════════════════════════════════════════════════════
+    // 🚀 PIPELINE STAGES
+    // ════════════════════════════════════════════════════════════════
     stages {
-        stage('Checkout') {
+        
+        // ┌─────────────────────────────────────────────────────────┐
+        // │ 1. CODE CHECKOUT                                        │
+        // └─────────────────────────────────────────────────────────┘
+        stage('📥 Checkout') {
             steps {
-                echo '📥 Checking out code from GitHub...'
+                echo '📥 Checking out code from repository...'
                 checkout scm
             }
         }
         
-        stage('SonarQube Analysis') {
+        // ┌─────────────────────────────────────────────────────────┐
+        // │ 2. CODE QUALITY ANALYSIS                                │
+        // └─────────────────────────────────────────────────────────┘
+        stage('🔍 SonarQube') {
             steps {
-                echo '🔍 Running SonarQube analysis...'
+                echo '🔍 Running code quality analysis...'
                 script {
-                    def scannerHome = tool 'SonarScanner'
+                    def scanner = tool 'SonarScanner'
                     withSonarQubeEnv('SonarQube') {
                         sh """
-                            ${scannerHome}/bin/sonar-scanner \
-                              -Dsonar.projectKey=todo-backend \
-                              -Dsonar.projectName="TODO Backend" \
-                              -Dsonar.projectVersion=${BUILD_NUMBER} \
-                              -Dsonar.sources=backend \
-                              -Dsonar.login=${env.SONAR_AUTH_TOKEN} \
+                            ${scanner}/bin/sonar-scanner \
+                              -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                              -Dsonar.projectName="${SONAR_PROJECT_NAME}" \
+                              -Dsonar.projectVersion=${IMAGE_TAG} \
+                              -Dsonar.sources=${APP_DIR} \
                               -Dsonar.qualitygate.wait=false
                         """
                     }
@@ -37,115 +67,97 @@ pipeline {
             }
         }
         
-        stage('Build Docker Image') {
+        // ┌─────────────────────────────────────────────────────────┐
+        // │ 3. BUILD DOCKER IMAGE                                   │
+        // └─────────────────────────────────────────────────────────┘
+        stage('🔨 Build') {
             steps {
-                echo '🔨 Building backend Docker image...'
-                dir('backend') {
+                echo "🔨 Building Docker image: ${DOCKER_IMAGE}:${IMAGE_TAG}"
+                dir("${APP_DIR}") {
                     sh """
-                        docker build -t ${ACR_LOGIN_SERVER}/${BACKEND_IMAGE}:${BUILD_NUMBER} .
-                        docker tag ${ACR_LOGIN_SERVER}/${BACKEND_IMAGE}:${BUILD_NUMBER} ${ACR_LOGIN_SERVER}/${BACKEND_IMAGE}:latest
+                        docker build -t ${ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:${IMAGE_TAG} .
+                        docker tag ${ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:${IMAGE_TAG} ${ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:latest
                     """
                 }
             }
         }
         
-        stage('Push to ACR') {
+        // ┌─────────────────────────────────────────────────────────┐
+        // │ 4. PUSH TO CONTAINER REGISTRY                           │
+        // └─────────────────────────────────────────────────────────┘
+        stage('📤 Push') {
             steps {
                 echo '📤 Pushing image to Azure Container Registry...'
                 script {
-                    withCredentials([usernamePassword(credentialsId: 'ACR', usernameVariable: 'ACR_USER', passwordVariable: 'ACR_PASS')]) {
+                    withCredentials([usernamePassword(
+                        credentialsId: "${ACR_CREDENTIALS_ID}",
+                        usernameVariable: 'USER',
+                        passwordVariable: 'PASS'
+                    )]) {
                         sh """
-                            echo ${ACR_PASS} | docker login ${ACR_LOGIN_SERVER} -u ${ACR_USER} --password-stdin
-                            docker push ${ACR_LOGIN_SERVER}/${BACKEND_IMAGE}:${BUILD_NUMBER}
-                            docker push ${ACR_LOGIN_SERVER}/${BACKEND_IMAGE}:latest
+                            echo \${PASS} | docker login ${ACR_LOGIN_SERVER} -u \${USER} --password-stdin
+                            docker push ${ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:${IMAGE_TAG}
+                            docker push ${ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:latest
                         """
                     }
                 }
             }
         }
         
-        stage('Deploy Backend to AKS') {
+        // ┌─────────────────────────────────────────────────────────┐
+        // │ 5. DEPLOY TO KUBERNETES                                 │
+        // └─────────────────────────────────────────────────────────┘
+        stage('☸️ Deploy') {
             steps {
-                echo '☸️ Deploying backend to Kubernetes...'
+                echo '☸️ Deploying to Kubernetes...'
                 script {
-                    withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+                    withCredentials([file(
+                        credentialsId: "${KUBECONFIG_CREDENTIALS_ID}",
+                        variable: 'KUBECONFIG'
+                    )]) {
                         sh """
                             export KUBECONFIG=\${KUBECONFIG}
                             
-                            # Create namespace
                             kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
-                            
-                            # Deploy backend
-                            kubectl apply -f \${WORKSPACE}/k8s/backend.yaml
-                            
-                            # Deploy ingress
-                            kubectl apply -f \${WORKSPACE}/k8s/ingress.yaml
-                            
-                            # Update image
-                            kubectl set image deployment/backend-deployment backend=${ACR_LOGIN_SERVER}/${BACKEND_IMAGE}:${BUILD_NUMBER} -n ${NAMESPACE}
-                            
-                            # Wait for rollout
-                            kubectl rollout status deployment/backend-deployment -n ${NAMESPACE} --timeout=300s
+                            kubectl apply -f ${K8S_DIR}/ -n ${NAMESPACE}
+                            kubectl set image deployment/${APP_NAME}-deployment ${APP_NAME}=${ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:${IMAGE_TAG} -n ${NAMESPACE}
+                            kubectl rollout status deployment/${APP_NAME}-deployment -n ${NAMESPACE} --timeout=300s
                         """
                     }
                 }
             }
         }
         
-        stage('Get Ingress URL') {
+        // ┌─────────────────────────────────────────────────────────┐
+        // │ 6. VERIFY DEPLOYMENT                                    │
+        // └─────────────────────────────────────────────────────────┘
+        stage('✅ Verify') {
             steps {
-                echo '🌐 Getting application status...'
+                echo '✅ Verifying deployment...'
                 script {
-                    withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+                    withCredentials([file(
+                        credentialsId: "${KUBECONFIG_CREDENTIALS_ID}",
+                        variable: 'KUBECONFIG'
+                    )]) {
                         sh """
                             export KUBECONFIG=\${KUBECONFIG}
                             
-                            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                            echo "═══════════════════════════════════════════"
                             echo "📊 DEPLOYMENT STATUS"
-                            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                            
+                            echo "═══════════════════════════════════════════"
+                            kubectl get pods -n ${NAMESPACE}
                             echo ""
-                            echo "🐳 Backend Pods:"
-                            kubectl get pods -l app=backend -n ${NAMESPACE}
-                            
-                            echo ""
-                            echo "🗄️ PostgreSQL Pods:"
-                            kubectl get pods -l app=postgres -n ${NAMESPACE}
-                            
-                            echo ""
-                            echo "🔌 Services:"
                             kubectl get svc -n ${NAMESPACE}
-                            
                             echo ""
-                            echo "🌐 Ingress:"
                             kubectl get ingress -n ${NAMESPACE}
+                            echo "═══════════════════════════════════════════"
                             
-                            echo ""
-                            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                            echo "🔗 ACCESS URLs"
-                            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                            INGRESS_IP=\$(kubectl get ingress -n ${NAMESPACE} -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
                             
-                            sleep 10
-                            
-                            INGRESS_IP=\$(kubectl get ingress backend-ingress -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
-                            
-                            if [ -z "\$INGRESS_IP" ]; then
+                            if [ ! -z "\$INGRESS_IP" ]; then
                                 echo ""
-                                echo "⚠️  Ingress IP not ready yet (may take 2-3 minutes)"
-                                echo ""
-                                echo "📝 Check status with:"
-                                echo "   kubectl get ingress backend-ingress -n ${NAMESPACE}"
-                            else
-                                echo ""
-                                echo "✅ Application is accessible at:"
-                                echo ""
-                                echo "   🏠 Main URL:     http://\$INGRESS_IP"
-                                echo "   ❤️  Health:      http://\$INGRESS_IP/health"
-                                echo "   🔌 API:         http://\$INGRESS_IP/api"
-                                echo ""
+                                echo "✅ Application URL: http://\$INGRESS_IP"
                             fi
-                            
-                            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                         """
                     }
                 }
@@ -153,26 +165,17 @@ pipeline {
         }
     }
     
+    // ════════════════════════════════════════════════════════════════
+    // 📋 POST-BUILD ACTIONS
+    // ════════════════════════════════════════════════════════════════
     post {
         success {
             echo '✅ Pipeline completed successfully!'
-            echo '🎉 Backend deployed to AKS with Ingress'
-            echo ''
-            echo '📝 Useful commands:'
-            echo "   kubectl get pods -n ${NAMESPACE}"
-            echo "   kubectl get svc -n ${NAMESPACE}"
-            echo "   kubectl get ingress -n ${NAMESPACE}"
-            echo "   kubectl logs -l app=backend -n ${NAMESPACE}"
         }
         failure {
             echo '❌ Pipeline failed!'
-            echo '🔍 Debug commands:'
-            echo "   kubectl get pods -n ${NAMESPACE}"
-            echo "   kubectl describe pod <POD_NAME> -n ${NAMESPACE}"
-            echo "   kubectl logs <POD_NAME> -n ${NAMESPACE}"
         }
         always {
-            echo '🧹 Cleaning up Docker images...'
             sh 'docker system prune -f || true'
         }
     }
