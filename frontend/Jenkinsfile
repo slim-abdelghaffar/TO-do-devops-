@@ -1,60 +1,182 @@
 pipeline {
     agent any
-
+    
+    // ════════════════════════════════════════════════════════════════
+    // 📝 CONFIGURATION - Modifiez uniquement cette section
+    // ════════════════════════════════════════════════════════════════
     environment {
-        APP_NAME            = 'todo-frontend'
-        ACR_NAME            = 'myacrregistry'
-        ACR_LOGIN_SERVER    = "${ACR_NAME}.azurecr.io"
-        IMAGE_NAME          = "$$ {ACR_LOGIN_SERVER}/ $${APP_NAME}"
-        IMAGE_TAG           = "${env.BUILD_NUMBER}"
-        K8S_NAMESPACE       = 'todo-app'
-        K8S_DEPLOYMENT      = 'frontend-deployment'   // ← change this
-        SONAR_PROJECT_KEY   = 'todo-frontend'
-
-        ACR_CREDENTIALS     = credentials('acr-credentials')
-        KUBECONFIG          = credentials('kubeconfig')
+        // Azure Container Registry
+        ACR_NAME = 'acrtodo3hvvezx7hmiso'
+        ACR_CREDENTIALS_ID = 'ACR'
+        
+        // Kubernetes
+        NAMESPACE = 'todo-app'
+        KUBECONFIG_CREDENTIALS_ID = 'kubeconfig'
+        
+        // Application
+        APP_NAME = 'frontend'
+        DOCKER_IMAGE = 'frontend'
+        
+        // SonarQube
+        SONAR_PROJECT_KEY = 'todo-frontend'
+        SONAR_PROJECT_NAME = 'TODO frontend'
+        
+        // Paths
+        APP_DIR = 'frontend'
+        K8S_DIR = 'k8s'
+        
+        // Auto-calculated (ne pas modifier)
+        ACR_LOGIN_SERVER = "${ACR_NAME}.azurecr.io"
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
     }
-
+    
+    // ════════════════════════════════════════════════════════════════
+    // 🚀 PIPELINE STAGES
+    // ════════════════════════════════════════════════════════════════
     stages {
-        stage('Checkout') { steps { checkout scm } }
-
-        stage('Install & Build') {
+        
+        // ┌─────────────────────────────────────────────────────────┐
+        // │ 1. CODE CHECKOUT                                        │
+        // └─────────────────────────────────────────────────────────┘
+        stage('📥 Checkout') {
             steps {
-                sh 'npm ci'
-                sh 'npm run build'   // usually creates dist/ or build/
+                echo '📥 Checking out code from repository...'
+                checkout scm
             }
         }
-
-        stage('Build & Push Docker') {
+        
+        // ┌─────────────────────────────────────────────────────────┐
+        // │ 2. CODE QUALITY ANALYSIS                                │
+        // └─────────────────────────────────────────────────────────┘
+        stage('🔍 SonarQube') {
             steps {
+                echo '🔍 Running code quality analysis...'
                 script {
-                    docker.withRegistry("https://${ACR_LOGIN_SERVER}", 'acr-credentials') {
-                        def image = docker.build("$$ {IMAGE_NAME}: $${IMAGE_TAG}", ".")
-                        image.push()
-                        image.push('latest')
+                    def scanner = tool 'SonarScanner'
+                    withSonarQubeEnv('SonarQube') {
+                        sh """
+                            ${scanner}/bin/sonar-scanner \
+                              -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                              -Dsonar.projectName="${SONAR_PROJECT_NAME}" \
+                              -Dsonar.projectVersion=${IMAGE_TAG} \
+                              -Dsonar.sources=${APP_DIR} \
+                              -Dsonar.qualitygate.wait=false
+                        """
                     }
                 }
             }
         }
-
-        stage('Deploy to AKS') {
+        
+        // ┌─────────────────────────────────────────────────────────┐
+        // │ 3. BUILD DOCKER IMAGE                                   │
+        // └─────────────────────────────────────────────────────────┘
+        stage('🔨 Build') {
             steps {
-                withKubeConfig([credentialsId: 'kubeconfig']) {
+                echo "🔨 Building Docker image: ${DOCKER_IMAGE}:${IMAGE_TAG}"
+                dir("${APP_DIR}") {
                     sh """
-                        kubectl set image deployment/${K8S_DEPLOYMENT} \
-                            $$ {APP_NAME}= $${IMAGE_NAME}:${IMAGE_TAG} \
-                            -n ${K8S_NAMESPACE}
-                        
-                        kubectl rollout status deployment/${K8S_DEPLOYMENT} \
-                            -n ${K8S_NAMESPACE} --timeout=300s
+                        docker build -t ${ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:${IMAGE_TAG} .
+                        docker tag ${ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:${IMAGE_TAG} ${ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:latest
                     """
                 }
             }
         }
+        
+        // ┌─────────────────────────────────────────────────────────┐
+        // │ 4. PUSH TO CONTAINER REGISTRY                           │
+        // └─────────────────────────────────────────────────────────┘
+        stage('📤 Push') {
+            steps {
+                echo '📤 Pushing image to Azure Container Registry...'
+                script {
+                    withCredentials([usernamePassword(
+                        credentialsId: "${ACR_CREDENTIALS_ID}",
+                        usernameVariable: 'USER',
+                        passwordVariable: 'PASS'
+                    )]) {
+                        sh """
+                            echo \${PASS} | docker login ${ACR_LOGIN_SERVER} -u \${USER} --password-stdin
+                            docker push ${ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:${IMAGE_TAG}
+                            docker push ${ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:latest
+                        """
+                    }
+                }
+            }
+        }
+        
+        // ┌─────────────────────────────────────────────────────────┐
+        // │ 5. DEPLOY TO KUBERNETES                                 │
+        // └─────────────────────────────────────────────────────────┘
+        stage('☸️ Deploy') {
+            steps {
+                echo '☸️ Deploying to Kubernetes...'
+                script {
+                    withCredentials([file(
+                        credentialsId: "${KUBECONFIG_CREDENTIALS_ID}",
+                        variable: 'KUBECONFIG'
+                    )]) {
+                        sh """
+                            export KUBECONFIG=\${KUBECONFIG}
+                            
+                            kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+                            kubectl apply -f ${K8S_DIR}/ -n ${NAMESPACE}
+                            kubectl set image deployment/${APP_NAME}-deployment ${APP_NAME}=${ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:${IMAGE_TAG} -n ${NAMESPACE}
+                            kubectl rollout status deployment/${APP_NAME}-deployment -n ${NAMESPACE} --timeout=300s
+                        """
+                    }
+                }
+            }
+        }
+        
+        // ┌─────────────────────────────────────────────────────────┐
+        // │ 6. VERIFY DEPLOYMENT                                    │
+        // └─────────────────────────────────────────────────────────┘
+        stage('✅ Verify') {
+            steps {
+                echo '✅ Verifying deployment...'
+                script {
+                    withCredentials([file(
+                        credentialsId: "${KUBECONFIG_CREDENTIALS_ID}",
+                        variable: 'KUBECONFIG'
+                    )]) {
+                        sh """
+                            export KUBECONFIG=\${KUBECONFIG}
+                            
+                            echo "═══════════════════════════════════════════"
+                            echo "📊 DEPLOYMENT STATUS"
+                            echo "═══════════════════════════════════════════"
+                            kubectl get pods -n ${NAMESPACE}
+                            echo ""
+                            kubectl get svc -n ${NAMESPACE}
+                            echo ""
+                            kubectl get ingress -n ${NAMESPACE}
+                            echo "═══════════════════════════════════════════"
+                            
+                            INGRESS_IP=\$(kubectl get ingress -n ${NAMESPACE} -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+                            
+                            if [ ! -z "\$INGRESS_IP" ]; then
+                                echo ""
+                                echo "✅ Application URL: http://\$INGRESS_IP"
+                            fi
+                        """
+                    }
+                }
+            }
+        }
     }
-
+    
+    // ════════════════════════════════════════════════════════════════
+    // 📋 POST-BUILD ACTIONS
+    // ════════════════════════════════════════════════════════════════
     post {
-        always { cleanWs() }
-        success { echo "Frontend deployed → $$ {IMAGE_NAME}: $${IMAGE_TAG}" }
+        success {
+            echo '✅ Pipeline completed successfully!'
+        }
+        failure {
+            echo '❌ Pipeline failed!'
+        }
+        always {
+            sh 'docker system prune -f || true'
+        }
     }
 }
