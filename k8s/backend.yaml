@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
       - name: backend
-        image: acrcicdlctccfyxhw4qg.azurecr.io/backend:latest
+        image: acrtodo3hvvezx7hmiso.azurecr.io/backend:latest
         imagePullPolicy: Always
         env:
         - name: NODE_ENV
