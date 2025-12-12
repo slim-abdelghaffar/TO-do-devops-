@@ -1,0 +1,16 @@
+{
+  "name": "todo-frontend",
+  "version": "1.0.0",
+  "description": "Simple Todo Frontend with HTML/CSS/JS",
+  "main": "index.html",
+  "scripts": {
+    "start": "npx http-server -p 8080",
+    "test": "echo \"No tests configured\" && exit 0"
+  },
+  "keywords": ["todo", "frontend", "html", "javascript"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "http-server": "^14.1.1"
+  }
+}

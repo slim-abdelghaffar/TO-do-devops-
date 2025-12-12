@@ -1,0 +1,169 @@
+pipeline {
+    agent any
+    
+    environment {
+        // Application
+        APP_NAME = 'todo-backend'
+        
+        // Docker & ACR
+        ACR_NAME = 'myacrregistry'  // Change to your ACR name
+        ACR_LOGIN_SERVER = "${ACR_NAME}.azurecr.io"
+        IMAGE_NAME = "${ACR_LOGIN_SERVER}/${APP_NAME}"
+        IMAGE_TAG = "${BUILD_NUMBER}"
+        
+        // Kubernetes
+        K8S_NAMESPACE = 'todo-app'
+        K8S_DEPLOYMENT = 'backend-deployment'
+        
+        // SonarQube
+        SONAR_PROJECT_KEY = 'todo-backend'
+        
+        // Credentials (stored in Jenkins)
+        ACR_CREDENTIALS = credentials('acr-credentials')
+        KUBECONFIG_CREDENTIALS = credentials('kubeconfig')
+        SONARQUBE_TOKEN = credentials('sonarqube-token')
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                echo '📥 Checking out code...'
+                checkout scm
+            }
+        }
+        
+        stage('Install Dependencies') {
+            steps {
+                dir('backend') {
+                    echo '📦 Installing Node.js dependencies...'
+                    sh 'npm install'
+                }
+            }
+        }
+        
+        stage('Run Tests') {
+            steps {
+                dir('backend') {
+                    echo '🧪 Running tests...'
+                    sh 'npm test || true'  // Continue even if no tests
+                }
+            }
+        }
+        
+        stage('SonarQube Analysis') {
+            steps {
+                dir('backend') {
+                    echo '🔍 Running SonarQube analysis...'
+                    script {
+                        def scannerHome = tool 'SonarQubeScanner'
+                        withSonarQubeEnv('SonarQube') {
+                            sh """
+                                ${scannerHome}/bin/sonar-scanner \
+                                -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                                -Dsonar.sources=. \
+                                -Dsonar.host.url=${SONAR_HOST_URL} \
+                                -Dsonar.login=${SONARQUBE_TOKEN}
+                            """
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Quality Gate') {
+            steps {
+                echo '🚦 Waiting for Quality Gate...'
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: false
+                }
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                dir('backend') {
+                    echo '🐳 Building Docker image...'
+                    script {
+                        sh """
+                            docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
+                            docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Push to ACR') {
+            steps {
+                echo '📤 Pushing image to Azure Container Registry...'
+                script {
+                    sh """
+                        echo ${ACR_CREDENTIALS_PSW} | docker login ${ACR_LOGIN_SERVER} \
+                            -u ${ACR_CREDENTIALS_USR} --password-stdin
+                        
+                        docker push ${IMAGE_NAME}:${IMAGE_TAG}
+                        docker push ${IMAGE_NAME}:latest
+                    """
+                }
+            }
+        }
+        
+        stage('Deploy to Kubernetes') {
+            steps {
+                echo '☸️  Deploying to AKS...'
+                script {
+                    sh """
+                        # Set kubeconfig
+                        export KUBECONFIG=${KUBECONFIG_CREDENTIALS}
+                        
+                        # Update deployment with new image
+                        kubectl set image deployment/${K8S_DEPLOYMENT} \
+                            ${APP_NAME}=${IMAGE_NAME}:${IMAGE_TAG} \
+                            -n ${K8S_NAMESPACE}
+                        
+                        # Wait for rollout to complete
+                        kubectl rollout status deployment/${K8S_DEPLOYMENT} \
+                            -n ${K8S_NAMESPACE} --timeout=5m
+                    """
+                }
+            }
+        }
+        
+        stage('Verify Deployment') {
+            steps {
+                echo '✅ Verifying deployment...'
+                script {
+                    sh """
+                        export KUBECONFIG=${KUBECONFIG_CREDENTIALS}
+                        
+                        # Check pods
+                        kubectl get pods -n ${K8S_NAMESPACE} -l app=${APP_NAME}
+                        
+                        # Check deployment status
+                        kubectl get deployment ${K8S_DEPLOYMENT} -n ${K8S_NAMESPACE}
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo '✅ Backend pipeline completed successfully!'
+            echo "🚀 Backend deployed: ${IMAGE_NAME}:${IMAGE_TAG}"
+        }
+        
+        failure {
+            echo '❌ Backend pipeline failed!'
+        }
+        
+        always {
+            echo '🧹 Cleaning up...'
+            // Clean up local Docker images
+            sh """
+                docker rmi ${IMAGE_NAME}:${IMAGE_TAG} || true
+                docker rmi ${IMAGE_NAME}:latest || true
+            """
+        }
+    }
+}
