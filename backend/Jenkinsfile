@@ -72,7 +72,7 @@ pipeline {
             }
         }
         
-        stage('Deploy to AKS') {
+       stage('Deploy to AKS') {
             steps {
                 echo '☸️ Deploying to Kubernetes...'
                 script {
@@ -80,14 +80,15 @@ pipeline {
                         sh """
                             export KUBECONFIG=\${KUBECONFIG}
                             
-                            # Deploy backend
-                            kubectl apply -f ../k8s/backend.yaml
-                            kubectl set image deployment/backend-deployment backend=${ACR_LOGIN_SERVER}/${BACKEND_IMAGE}:${BUILD_NUMBER}
+                            # Create namespace
+                            kubectl create namespace todo-app --dry-run=client -o yaml | kubectl apply -f -
                             
-                           
+                            # Deploy backend using WORKSPACE
+                            kubectl apply -f \${WORKSPACE}/k8s/backend.yaml -n todo-app
+                            kubectl set image deployment/backend-deployment backend=${ACR_LOGIN_SERVER}/${BACKEND_IMAGE}:${BUILD_NUMBER} -n todo-app
                             
                             # Wait for rollout
-                            kubectl rollout status deployment/backend-deployment
+                            kubectl rollout status deployment/backend-deployment -n todo-app
                         """
                     }
                 }
