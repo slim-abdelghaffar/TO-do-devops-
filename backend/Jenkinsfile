@@ -65,8 +65,7 @@ pipeline {
                             docker push ${ACR_LOGIN_SERVER}/${BACKEND_IMAGE}:${BUILD_NUMBER}
                             docker push ${ACR_LOGIN_SERVER}/${BACKEND_IMAGE}:latest
                             
-                            docker push ${ACR_LOGIN_SERVER}/${FRONTEND_IMAGE}:${BUILD_NUMBER}
-                            docker push ${ACR_LOGIN_SERVER}/${FRONTEND_IMAGE}:latest
+                            
                         """
                     }
                 }
