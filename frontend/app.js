@@ -1,12 +1,20 @@
 // ========================================
 // Configuration
 // ========================================
-const API_URL = window.location.hostname === 'localhost'
-    ? 'http://localhost:3000/api'
+    // ========================================
+// Configuration
+// ========================================
+const isLocalDev = window.location.hostname === 'localhost' ||
+                   window.location.hostname === '127.0.0.1' ||
+                   window.location.hostname === '4.178.59.162';
+
+const API_URL = isLocalDev
+    ? 'http://4.178.59.162:3000/api'
     : '/api';
 
-const HEALTH_CHECK_URL = API_URL.replace('/api', '/health');
-
+const HEALTH_CHECK_URL = isLocalDev
+    ? 'http://4.178.59.162:3000/health'
+    : '/health';
 
 // ========================================
 // DOM Elements
@@ -94,7 +102,7 @@ function formatDate(dateString) {
     if (diffInMins < 60) return `${diffInMins}m ago`;
     if (diffInHours < 24) return `${diffInHours}h ago`;
     if (diffInDays < 7) return `${diffInDays}d ago`;
-    
+
     return date.toLocaleDateString();
 }
 
@@ -124,13 +132,13 @@ async function fetchTodos() {
 
     try {
         const response = await fetch(`${API_URL}/todos`);
-        
+
         if (!response.ok) {
             throw new Error(`Failed to fetch todos: ${response.status}`);
         }
 
         const data = await response.json();
-        
+
         if (data.success) {
             todos = data.data;
             renderTodos();
@@ -252,9 +260,9 @@ function renderTodos() {
         li.setAttribute('data-id', todo.id);
 
         li.innerHTML = `
-            <input 
-                type="checkbox" 
-                class="todo-checkbox" 
+            <input
+                type="checkbox"
+                class="todo-checkbox"
                 ${todo.completed ? 'checked' : ''}
                 onchange="toggleTodo(${todo.id})"
             >
@@ -302,7 +310,7 @@ retryBtn.addEventListener('click', () => {
 document.addEventListener('DOMContentLoaded', () => {
     console.log('🚀 Todo App Initialized');
     console.log('📡 API URL:', API_URL);
-    
+
     // Check backend health
     checkBackendHealth();
     setInterval(checkBackendHealth, 30000); // Check every 30 seconds
