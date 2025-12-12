@@ -7,6 +7,11 @@ metadata:
   namespace: todo-app
 spec:
   replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: backend
@@ -17,11 +22,13 @@ spec:
     spec:
       containers:
       - name: backend
-        image: myacrregistry.azurecr.io/todo-backend:latest  # Jenkins will update this
+        image: acrcicdlctccfyxhw4qg.azurecr.io/backend:latest
         imagePullPolicy: Always
         env:
+        - name: NODE_ENV
+          value: "production"
         - name: DB_HOST
-          value: postgres-service
+          value: postgres-service.todo-app.svc.cluster.local
         - name: DB_USER
           valueFrom:
             secretKeyRef:
@@ -37,18 +44,43 @@ spec:
         - name: DB_PORT
           value: "5432"
         ports:
-        - containerPort: 3000
-
+        - name: http
+          containerPort: 3000
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
 ---
-# Backend Service
+# Backend Service (ClusterIP pour Ingress)
 apiVersion: v1
 kind: Service
 metadata:
   name: backend-service
   namespace: todo-app
 spec:
+  type: ClusterIP  # ✅ Interne uniquement, exposé via Ingress
   selector:
     app: backend
   ports:
-  - port: 3000
+  - name: http
+    port: 80
     targetPort: 3000
