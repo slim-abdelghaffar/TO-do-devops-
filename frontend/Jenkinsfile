@@ -1,0 +1,60 @@
+pipeline {
+    agent any
+
+    environment {
+        APP_NAME            = 'todo-frontend'
+        ACR_NAME            = 'myacrregistry'
+        ACR_LOGIN_SERVER    = "${ACR_NAME}.azurecr.io"
+        IMAGE_NAME          = "$$ {ACR_LOGIN_SERVER}/ $${APP_NAME}"
+        IMAGE_TAG           = "${env.BUILD_NUMBER}"
+        K8S_NAMESPACE       = 'todo-app'
+        K8S_DEPLOYMENT      = 'frontend-deployment'   // ← change this
+        SONAR_PROJECT_KEY   = 'todo-frontend'
+
+        ACR_CREDENTIALS     = credentials('acr-credentials')
+        KUBECONFIG          = credentials('kubeconfig')
+    }
+
+    stages {
+        stage('Checkout') { steps { checkout scm } }
+
+        stage('Install & Build') {
+            steps {
+                sh 'npm ci'
+                sh 'npm run build'   // usually creates dist/ or build/
+            }
+        }
+
+        stage('Build & Push Docker') {
+            steps {
+                script {
+                    docker.withRegistry("https://${ACR_LOGIN_SERVER}", 'acr-credentials') {
+                        def image = docker.build("$$ {IMAGE_NAME}: $${IMAGE_TAG}", ".")
+                        image.push()
+                        image.push('latest')
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to AKS') {
+            steps {
+                withKubeConfig([credentialsId: 'kubeconfig']) {
+                    sh """
+                        kubectl set image deployment/${K8S_DEPLOYMENT} \
+                            $$ {APP_NAME}= $${IMAGE_NAME}:${IMAGE_TAG} \
+                            -n ${K8S_NAMESPACE}
+                        
+                        kubectl rollout status deployment/${K8S_DEPLOYMENT} \
+                            -n ${K8S_NAMESPACE} --timeout=300s
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        always { cleanWs() }
+        success { echo "Frontend deployed → $$ {IMAGE_NAME}: $${IMAGE_TAG}" }
+    }
+}
