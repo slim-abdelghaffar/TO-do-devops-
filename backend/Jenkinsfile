@@ -94,37 +94,58 @@ pipeline {
         
         stage('Get Ingress URL') {
             steps {
-                echo '🌐 Getting Ingress URL...'
+                echo '🌐 Getting application status...'
                 script {
                     withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
                         sh """
                             export KUBECONFIG=\${KUBECONFIG}
                             
-                            echo "📊 Backend Pods:"
+                            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                            echo "📊 DEPLOYMENT STATUS"
+                            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                            
+                            echo ""
+                            echo "🐳 Backend Pods:"
                             kubectl get pods -l app=backend -n ${NAMESPACE}
                             
                             echo ""
-                            echo "🔌 Backend Service:"
-                            kubectl get svc backend-service -n ${NAMESPACE}
+                            echo "🗄️ PostgreSQL Pods:"
+                            kubectl get pods -l app=postgres -n ${NAMESPACE}
+                            
+                            echo ""
+                            echo "🔌 Services:"
+                            kubectl get svc -n ${NAMESPACE}
                             
                             echo ""
                             echo "🌐 Ingress:"
-                            kubectl get ingress backend-ingress -n ${NAMESPACE}
+                            kubectl get ingress -n ${NAMESPACE}
                             
                             echo ""
-                            echo "⏳ Waiting for Ingress IP..."
+                            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                            echo "🔗 ACCESS URLs"
+                            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                            
                             sleep 10
                             
-                            INGRESS_IP=\$(kubectl get ingress backend-ingress -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                            INGRESS_IP=\$(kubectl get ingress backend-ingress -n ${NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
                             
                             if [ -z "\$INGRESS_IP" ]; then
-                                echo "⚠️ Ingress IP not ready yet"
-                                echo "Check with: kubectl get ingress backend-ingress -n ${NAMESPACE}"
+                                echo ""
+                                echo "⚠️  Ingress IP not ready yet (may take 2-3 minutes)"
+                                echo ""
+                                echo "📝 Check status with:"
+                                echo "   kubectl get ingress backend-ingress -n ${NAMESPACE}"
                             else
-                                echo "✅ Backend URL: http://\$INGRESS_IP"
-                                echo "🔗 Health check: http://\$INGRESS_IP/health"
-                                echo "🔗 API: http://\$INGRESS_IP/api"
+                                echo ""
+                                echo "✅ Application is accessible at:"
+                                echo ""
+                                echo "   🏠 Main URL:     http://\$INGRESS_IP"
+                                echo "   ❤️  Health:      http://\$INGRESS_IP/health"
+                                echo "   🔌 API:         http://\$INGRESS_IP/api"
+                                echo ""
                             fi
+                            
+                            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                         """
                     }
                 }
@@ -135,16 +156,20 @@ pipeline {
     post {
         success {
             echo '✅ Pipeline completed successfully!'
-            echo '🎉 Backend deployed with Ingress'
+            echo '🎉 Backend deployed to AKS with Ingress'
             echo ''
-            echo '📝 Get Ingress IP:'
-            echo "kubectl get ingress backend-ingress -n ${NAMESPACE}"
+            echo '📝 Useful commands:'
+            echo "   kubectl get pods -n ${NAMESPACE}"
+            echo "   kubectl get svc -n ${NAMESPACE}"
+            echo "   kubectl get ingress -n ${NAMESPACE}"
+            echo "   kubectl logs -l app=backend -n ${NAMESPACE}"
         }
         failure {
             echo '❌ Pipeline failed!'
             echo '🔍 Debug commands:'
-            echo "kubectl get pods -n ${NAMESPACE}"
-            echo "kubectl logs -l app=backend -n ${NAMESPACE}"
+            echo "   kubectl get pods -n ${NAMESPACE}"
+            echo "   kubectl describe pod <POD_NAME> -n ${NAMESPACE}"
+            echo "   kubectl logs <POD_NAME> -n ${NAMESPACE}"
         }
         always {
             echo '🧹 Cleaning up Docker images...'
