@@ -5,13 +5,15 @@ pipeline {
     // 📝 CONFIGURATION - Modifiez uniquement cette section
     // ════════════════════════════════════════════════════════════════
     environment {
-        // Azure Container Registry
-        ACR_NAME = 'acrtodo3hvvezx7hmiso'
-        ACR_CREDENTIALS_ID = 'ACR'
+        // Jenkins Credentials IDs (déjà configurés dans Jenkins)
+        ACR_CREDENTIALS_ID = 'ACR'  // Credentials ACR (username/password)
+        KUBECONFIG_CREDENTIALS_ID = 'kubeconfig'  // Fichier kubeconfig
+        
+        // Azure Resource Group (pour auto-détection si besoin)
+        AZURE_RESOURCE_GROUP = 'rg-devops'
         
         // Kubernetes
         NAMESPACE = 'todo-app'
-        KUBECONFIG_CREDENTIALS_ID = 'kubeconfig'
         
         // Application
         APP_NAME = 'backend'
@@ -26,7 +28,6 @@ pipeline {
         K8S_DIR = 'k8s'
         
         // Auto-calculated (ne pas modifier)
-        ACR_LOGIN_SERVER = "${ACR_NAME}.azurecr.io"
         IMAGE_TAG = "${env.BUILD_NUMBER}"
     }
     
@@ -34,6 +35,61 @@ pipeline {
     // 🚀 PIPELINE STAGES
     // ════════════════════════════════════════════════════════════════
     stages {
+        
+        // ┌─────────────────────────────────────────────────────────┐
+        // │ 0. AUTO-DETECT AZURE RESOURCES FROM CREDENTIALS         │
+        // └─────────────────────────────────────────────────────────┘
+        stage('🔎 Detect Azure Resources') {
+            steps {
+                echo '🔎 Auto-detecting Azure resources from credentials...'
+                script {
+                    // Détecter l'ACR depuis les credentials
+                    withCredentials([usernamePassword(
+                        credentialsId: "${ACR_CREDENTIALS_ID}",
+                        usernameVariable: 'ACR_USERNAME',
+                        passwordVariable: 'ACR_PASSWORD'
+                    )]) {
+                        // L'username ACR est généralement le nom de l'ACR
+                        env.ACR_NAME = ACR_USERNAME
+                        env.ACR_LOGIN_SERVER = "${ACR_USERNAME}.azurecr.io"
+                        
+                        echo "✅ Detected ACR from credentials: ${env.ACR_NAME}"
+                    }
+                    
+                    // Détecter l'AKS depuis le kubeconfig
+                    withCredentials([file(
+                        credentialsId: "${KUBECONFIG_CREDENTIALS_ID}",
+                        variable: 'KUBECONFIG'
+                    )]) {
+                        def clusterName = sh(
+                            script: "kubectl config view --kubeconfig=\${KUBECONFIG} -o jsonpath='{.clusters[0].name}'",
+                            returnStdout: true
+                        ).trim()
+                        
+                        env.AKS_CLUSTER_NAME = clusterName
+                        
+                        def serverUrl = sh(
+                            script: "kubectl config view --kubeconfig=\${KUBECONFIG} -o jsonpath='{.clusters[0].cluster.server}'",
+                            returnStdout: true
+                        ).trim()
+                        
+                        echo "✅ Detected AKS from kubeconfig: ${env.AKS_CLUSTER_NAME}"
+                        echo "   Server: ${serverUrl}"
+                    }
+                    
+                    echo """
+                    ═══════════════════════════════════════════
+                    📋 DETECTED RESOURCES
+                    ═══════════════════════════════════════════
+                    ACR Name:       ${env.ACR_NAME}
+                    ACR Server:     ${env.ACR_LOGIN_SERVER}
+                    AKS Cluster:    ${env.AKS_CLUSTER_NAME}
+                    Application:    ${APP_NAME} (Backend)
+                    ═══════════════════════════════════════════
+                    """
+                }
+            }
+        }
         
         // ┌─────────────────────────────────────────────────────────┐
         // │ 1. CODE CHECKOUT                                        │
@@ -75,8 +131,8 @@ pipeline {
                 echo "🔨 Building Docker image: ${DOCKER_IMAGE}:${IMAGE_TAG}"
                 dir("${APP_DIR}") {
                     sh """
-                        docker build -t ${ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:${IMAGE_TAG} .
-                        docker tag ${ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:${IMAGE_TAG} ${ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:latest
+                        docker build -t ${env.ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:${IMAGE_TAG} .
+                        docker tag ${env.ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:${IMAGE_TAG} ${env.ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:latest
                     """
                 }
             }
@@ -91,13 +147,13 @@ pipeline {
                 script {
                     withCredentials([usernamePassword(
                         credentialsId: "${ACR_CREDENTIALS_ID}",
-                        usernameVariable: 'USER',
-                        passwordVariable: 'PASS'
+                        usernameVariable: 'ACR_USER',
+                        passwordVariable: 'ACR_PASS'
                     )]) {
                         sh """
-                            echo \${PASS} | docker login ${ACR_LOGIN_SERVER} -u \${USER} --password-stdin
-                            docker push ${ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:${IMAGE_TAG}
-                            docker push ${ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:latest
+                            echo "\${ACR_PASS}" | docker login ${env.ACR_LOGIN_SERVER} -u "\${ACR_USER}" --password-stdin
+                            docker push ${env.ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:${IMAGE_TAG}
+                            docker push ${env.ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:latest
                         """
                     }
                 }
@@ -118,10 +174,26 @@ pipeline {
                         sh """
                             export KUBECONFIG=\${KUBECONFIG}
                             
+                            # Verify connection
+                            echo "Verifying Kubernetes connection..."
+                            kubectl cluster-info
+                            kubectl get nodes
+                            
+                            # Create namespace
                             kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+                            
+                            # Apply manifests
                             kubectl apply -f ${K8S_DIR}/ -n ${NAMESPACE}
-                            kubectl set image deployment/${APP_NAME}-deployment ${APP_NAME}=${ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:${IMAGE_TAG} -n ${NAMESPACE}
-                            kubectl rollout status deployment/${APP_NAME}-deployment -n ${NAMESPACE} --timeout=300s
+                            
+                            # Update image
+                            kubectl set image deployment/${APP_NAME}-deployment \
+                              ${APP_NAME}=${env.ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:${IMAGE_TAG} \
+                              -n ${NAMESPACE}
+                            
+                            # Wait for rollout
+                            kubectl rollout status deployment/${APP_NAME}-deployment \
+                              -n ${NAMESPACE} \
+                              --timeout=300s
                         """
                     }
                 }
@@ -143,21 +215,40 @@ pipeline {
                             export KUBECONFIG=\${KUBECONFIG}
                             
                             echo "═══════════════════════════════════════════"
-                            echo "📊 DEPLOYMENT STATUS"
+                            echo "📊 DEPLOYMENT STATUS - BACKEND"
                             echo "═══════════════════════════════════════════"
-                            kubectl get pods -n ${NAMESPACE}
+                            kubectl get pods -n ${NAMESPACE} -l app=${APP_NAME} -o wide
                             echo ""
+                            echo "All Services:"
                             kubectl get svc -n ${NAMESPACE}
                             echo ""
                             kubectl get ingress -n ${NAMESPACE}
                             echo "═══════════════════════════════════════════"
                             
+                            # Get backend service details
+                            echo ""
+                            echo "Backend Service Details:"
+                            kubectl describe svc ${APP_NAME}-service -n ${NAMESPACE} || echo "Service not found"
+                            
+                            # Get application URL
                             INGRESS_IP=\$(kubectl get ingress -n ${NAMESPACE} -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
                             
                             if [ ! -z "\$INGRESS_IP" ]; then
                                 echo ""
-                                echo "✅ Application URL: http://\$INGRESS_IP"
+                                echo "✅ Application URLs:"
+                                echo "   Frontend: http://\$INGRESS_IP"
+                                echo "   Backend API: http://\$INGRESS_IP/api"
+                            else
+                                echo ""
+                                echo "⏳ Ingress IP not yet available"
                             fi
+                            
+                            # Show recent events for backend
+                            echo ""
+                            echo "═══════════════════════════════════════════"
+                            echo "📝 RECENT BACKEND EVENTS"
+                            echo "═══════════════════════════════════════════"
+                            kubectl get events -n ${NAMESPACE} --field-selector involvedObject.name=${APP_NAME}-deployment --sort-by='.lastTimestamp' | tail -10 || echo "No events found"
                         """
                     }
                 }
@@ -170,10 +261,18 @@ pipeline {
     // ════════════════════════════════════════════════════════════════
     post {
         success {
-            echo '✅ Pipeline completed successfully!'
+            echo """
+            ═══════════════════════════════════════════
+            ✅ BACKEND PIPELINE COMPLETED SUCCESSFULLY!
+            ═══════════════════════════════════════════
+            Image: ${env.ACR_LOGIN_SERVER}/${DOCKER_IMAGE}:${IMAGE_TAG}
+            Cluster: ${env.AKS_CLUSTER_NAME}
+            Namespace: ${NAMESPACE}
+            ═══════════════════════════════════════════
+            """
         }
         failure {
-            echo '❌ Pipeline failed!'
+            echo '❌ Backend pipeline failed! Check logs for details.'
         }
         always {
             sh 'docker system prune -f || true'
